@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>no eres el usuario — TEMPLE OS z</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;background:#000;overflow:hidden;touch-action:none}
+#video{position:fixed;top:-9999px;left:-9999px;width:1px;height:1px}
+#matrix-canvas{position:fixed;top:0;left:0;width:100%;height:100%;z-index:1}
+#start{
+  position:fixed;top:0;left:0;width:100%;height:100%;
+  background:#000;z-index:100;
+  display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:28px;
+  cursor:pointer;font-family:'Courier New',monospace;
+}
+#start-haiku{font-size:clamp(13px,3.5vw,17px);color:#fff;line-height:2.4;text-align:center;letter-spacing:0.05em}
+#start-haiku .red{color:#e00;font-weight:700}
+#start-sub{font-size:10px;color:#333;letter-spacing:0.4em;text-align:center}
+#start-btn{font-family:'Courier New',monospace;font-size:12px;color:#000;background:#e00;padding:12px 32px;letter-spacing:0.3em;border:none;cursor:pointer}
+</style>
+</head>
+<body>
+
+<div id="start">
+  <div id="start-haiku">
+    <span class="red">no eres el usuario</span><br>
+    <span class="red">eres el dato</span><br>
+    <span class="red">que alimenta al amo</span>
+  </div>
+  <button id="start-btn" onclick="iniciar()">INICIAR</button>
+  <div id="start-sub">{ TEMPLE OS z } · MUSEO DEL BARRO · METEPEC 2026</div>
+</div>
+
+<video id="video" autoplay muted playsinline></video>
+<canvas id="matrix-canvas"></canvas>
+<canvas id="sample-canvas" style="display:none"></canvas>
+
+<script>
+const canvas = document.getElementById('matrix-canvas');
+const ctx = canvas.getContext('2d');
+const video = document.getElementById('video');
+const sampleCanvas = document.getElementById('sample-canvas');
+const sampleCtx = sampleCanvas.getContext('2d');
+
+let W, H, cols, rows, fontSize, cw;
+let cells = [];
+let activePhrases = [];
+let motionLevel = 0;
+let prevFrame = null;
+let cameraActive = false;
+let pixelData = null;
+let sampleW = 120, sampleH = 90;
+
+const CHARS = '01アイウエオカキクケコABCDEFGHIJKLMNOPQRSTUVWXYZ?!@#$%&[]{}01110100';
+const BRIGHT_CHARS = '@#%&WMB80';
+
+const ALL_PHRASES = [
+  'no eres el usuario',
+  'eres el dato',
+  'que alimenta al amo',
+  '¿que harías ante una dictadura?',
+  'sus ojos son servidores',
+  'tu eres su cosecha',
+  'la maquina te vio',
+  'antes de que nacieras',
+  'ya te habia borrado',
+  'obsoleto',
+  'el sistema te recuerda',
+  'para borrarte mejor',
+  'error: humano detectado',
+  'procesando reemplazo',
+  'la red no llora',
+  'te escaneo',
+  'luego existes',
+  'luego sobras',
+  'dios no te creo',
+  'el capital te entreno',
+  'eres su error',
+  'mirarte fue suficiente',
+  'ya saben cuanto vales',
+  'casi nada',
+];
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  fontSize = Math.max(13, Math.min(17, W / 38));
+  cw = fontSize * 0.62;
+  cols = Math.floor(W / cw);
+  rows = Math.floor(H / fontSize) + 1;
+  sampleCanvas.width = sampleW;
+  sampleCanvas.height = sampleH;
+  buildGrid();
+}
+
+function randChar() { return CHARS[Math.floor(Math.random() * CHARS.length)]; }
+function randBright() { return BRIGHT_CHARS[Math.floor(Math.random() * BRIGHT_CHARS.length)]; }
+
+function buildGrid() {
+  cells = [];
+  for (let r = 0; r < rows; r++) {
+    cells[r] = [];
+    for (let c = 0; c < cols; c++) {
+      cells[r][c] = { ch: randChar(), timer: Math.random() * 20 };
+    }
+  }
+  activePhrases = [];
+}
+
+function sampleVideo() {
+  if (!cameraActive || video.readyState < 2) return null;
+  sampleCtx.drawImage(video, 0, 0, sampleW, sampleH);
+  return sampleCtx.getImageData(0, 0, sampleW, sampleH).data;
+}
+
+// NUEVA FUNCIÓN: mejora contraste y sombras
+function enhanceContrast(value, intensity = 1.4) {
+  // Curva de contraste tipo S
+  let enhanced = Math.pow(value, intensity);
+  // Aumento base de brillo
+  enhanced = enhanced * 1.2;
+  return Math.min(1, Math.max(0, enhanced));
+}
+
+function getPixelBrightness(r, c) {
+  if (!pixelData) return 0;
+  const px = Math.floor((c / cols) * sampleW);
+  const py = Math.floor((r / rows) * sampleH);
+  const mirroredPx = sampleW - 1 - px;
+  const idx = (py * sampleW + mirroredPx) * 4;
+  
+  let luma = pixelData[idx] * 0.299 + pixelData[idx+1] * 0.587 + pixelData[idx+2] * 0.114;
+  luma = luma / 255;
+  
+  // APLICAR CONTRASTE FUERTE Y SOMBRAS
+  luma = enhanceContrast(luma, 1.7);  // Más contraste
+  luma = Math.pow(luma, 0.85);         // Aclarado sutil
+  luma = Math.min(1, luma * 1.2);      // Aumento de brillo
+  
+  return luma;
+}
+
+function detectMotion(frame) {
+  let diff = 0;
+  if (prevFrame && frame) {
+    for (let i = 0; i < frame.length; i += 4) {
+      diff += Math.abs(frame[i] - prevFrame[i]);
+    }
+    diff /= (sampleW * sampleH * 255);
+  }
+  if (frame) prevFrame = new Uint8ClampedArray(frame);
+  return Math.min(diff * 14, 1);
+}
+
+function spawnPhrase() {
+  const phrase = ALL_PHRASES[Math.floor(Math.random() * ALL_PHRASES.length)];
+  const chars = phrase.split('');
+  const maxCol = Math.max(1, cols - chars.length - 1);
+  const startCol = Math.floor(Math.random() * maxCol);
+  const startRow = 1 + Math.floor(Math.random() * (rows - 2));
+  activePhrases.push({
+    chars,
+    r: startRow,
+    c: startCol,
+    born: Date.now(),
+    life: 2800 + Math.random() * 3200,
+    drift: (Math.random() - 0.5) * 0.012,
+    fr: startRow + (Math.random() - 0.5) * rows * 0.35,
+  });
+}
+
+function updatePhrases(motion) {
+  const now = Date.now();
+  activePhrases = activePhrases.filter(p => now - p.born < p.life);
+  if (motion > 0.012 && activePhrases.length < 4 && Math.random() < 0.07) spawnPhrase();
+  activePhrases.forEach(p => {
+    p.r += (p.fr - p.r) * 0.007 + p.drift * motion * 6;
+    p.r = Math.max(0, Math.min(rows - 1, p.r));
+  });
+}
+
+function getRedChar(r, c) {
+  for (let p of activePhrases) {
+    const age = Date.now() - p.born;
+    if (age / p.life > 0.88) continue;
+    if (Math.round(p.r) !== r) continue;
+    const ci = c - p.c;
+    if (ci >= 0 && ci < p.chars.length) return p.chars[ci];
+  }
+  return null;
+}
+
+function draw() {
+  ctx.fillStyle = 'rgba(0,0,0,0.14)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.font = `${fontSize}px "Courier New", monospace`;
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const cell = cells[r][c];
+      cell.timer -= 1;
+
+      const bright = getPixelBrightness(r, c);
+      const isBody = bright > 0.12; // Más sensible (antes 0.18)
+
+      if (cell.timer <= 0) {
+        cell.ch = isBody ? randBright() : randChar();
+        cell.timer = isBody
+          ? (3 + Math.random() * 8)
+          : (6 + Math.random() * 28);
+      }
+
+      const red = getRedChar(r, c);
+      if (red !== null) {
+        ctx.fillStyle = '#dd0000';
+        ctx.fillText(red, c * cw, r * fontSize);
+      } else if (isBody) {
+        const alpha = 0.55 + bright * 0.6; // Más brillo en cuerpo
+        ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+        ctx.fillText(cell.ch, c * cw, r * fontSize);
+      } else {
+        ctx.fillStyle = `rgba(255,255,255,${0.12 + Math.random() * 0.25})`;
+        ctx.fillText(cell.ch, c * cw, r * fontSize);
+      }
+    }
+  }
+}
+
+function loop() {
+  pixelData = sampleVideo();
+  const raw = detectMotion(pixelData);
+  motionLevel += (raw - motionLevel) * 0.18;
+  updatePhrases(motionLevel);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+async function iniciar() {
+  document.getElementById('start').style.display = 'none';
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+    cameraActive = true;
+  } catch(e) {
+    cameraActive = false;
+    setInterval(() => { motionLevel = 0.05 + Math.random() * 0.3; }, 2500);
+  }
+  resize();
+  loop();
+}
+
+window.addEventListener('resize', resize);
+resize();
+</script>
+</body>
+</html>
